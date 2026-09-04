@@ -1,29 +1,26 @@
 import csv
-import dataclasses
+from dataclasses import dataclass
 from pathlib import Path
 
-@dataclasses.dataclass
+
+@dataclass
 class Person:
     id: str
     name: str
     skills: list[str]
     experience: int
 
-@dataclasses.dataclass
+@dataclass
 class Task:
     id: str
     title: str
     description: str
 
 
-REQUIRED_TASK_FIELDS = ["id", "title", "description"]
-FIRST_DATA_LINE = 2
-REQUIRED_PERSON_FIELDS = ["id", "name", "skills", "experience"]
-
 def parse_person(row: dict, line_number: int) -> Person:
     missing = [
         field
-        for field in REQUIRED_PERSON_FIELDS
+        for field in ["id", "name", "skills", "experience"]
         if not (row.get(field) or "").strip()
     ]
     if missing:
@@ -31,25 +28,15 @@ def parse_person(row: dict, line_number: int) -> Person:
     return Person(
         id=row["id"].strip(),
         name=row["name"].strip(),
-        skills=row["skills"].strip().split(","),
-        experience=int(row["experience"].strip())
+        skills=[part.strip() for part in row["skills"].split(",") if part.strip()],
+        experience=int(row["experience"].strip()),
     )
 
-def load_people(csv_path: str | Path) -> list[Person]:
-    people: list[Person] = []
-    with open(csv_path, newline="", encoding="utf-8") as csv_file:
-        reader = csv.DictReader(csv_file)
-        for line_number, row in enumerate(reader, start=FIRST_DATA_LINE):
-            try:
-                people.append(parse_person(row, line_number))
-            except ValueError as exc:
-                print(f"skipping person: {exc}")
-    return people
 
 def parse_task(row: dict, line_number: int) -> Task:
     missing = [
         field
-        for field in REQUIRED_TASK_FIELDS
+        for field in ["id", "title", "description"]
         if not (row.get(field) or "").strip()
     ]
     if missing:
@@ -60,28 +47,26 @@ def parse_task(row: dict, line_number: int) -> Task:
         description=row["description"].strip(),
     )
 
+
+def load_people(csv_path: str | Path) -> list[Person]:
+    people: list[Person] = []
+    with open(csv_path) as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            try:
+                people.append(parse_person(row, reader.line_num))
+            except ValueError as exc:
+                print(f"skipping person: {exc}")
+    return people
+
+
 def load_tasks(csv_path: str | Path) -> list[Task]:
     tasks: list[Task] = []
-    with open(csv_path, newline="", encoding="utf-8") as csv_file:
+    with open(csv_path) as csv_file:
         reader = csv.DictReader(csv_file)
-        for line_number, row in enumerate(reader, start=FIRST_DATA_LINE):
+        for row in reader:
             try:
-                tasks.append(parse_task(row, line_number))
+                tasks.append(parse_task(row, reader.line_num))
             except ValueError as exc:
                 print(f"skipping task: {exc}")
     return tasks
-
-
-def main():
-    from matching import match_all, openai_call
-
-    people = load_people("people.csv")
-    tasks = load_tasks("tasks.csv")
-    for result in match_all(tasks, people, openai_call, k=2, workers=2, batch_size=2):
-        print(result)
-
-
-if __name__ == "__main__":
-    main()
-
-
