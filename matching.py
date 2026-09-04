@@ -3,8 +3,10 @@ import os
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
+
+import numpy as np
 
 from parsing import Person, Task
 
@@ -17,51 +19,40 @@ class Match:
 
 
 def build_prompt(task: Task, people: list[Person]) -> str:
-    task_json = {
-        "id": task.id,
-        "title": task.title,
-        "description": task.description,
-    }
-    people_json = [
-        {
-            "id": person.id,
-            "name": person.name,
-            "skills": person.skills,
-            "experience": person.experience,
-        }
-        for person in people
-    ]
     return (
         "Pick exactly one candidate for this task. Do not invent people.\n"
         'Return JSON only: {"person_id": "...", "reason": "..."}\n\n'
-        f"TASK:\n{json.dumps(task_json)}\n\n"
-        f"CANDIDATES:\n{json.dumps(people_json)}\n"
+        f"TASK:\n{json.dumps(asdict(task))}\n\n"
+        f"CANDIDATES:\n{json.dumps([asdict(p) for p in people])}\n"
     )
+
+
+def _openai_json(url: str, payload: dict) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
 
 
 def openai_call(prompt: str, retries: int = 3) -> str:
     """POST prompt to OpenAI. Retry only on 429 or timeout."""
     print(f"openai request start prompt_chars={len(prompt)}")
-    body = json.dumps(
-        {
-            "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    ).encode()
+    payload = {
+        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_object"},
+    }
     last_error = None
     for attempt in range(1, retries + 1):
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=body,
-            headers={
-                "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-                "Content-Type": "application/json",
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read())
-            text = payload["choices"][0]["message"]["content"]
+            data = _openai_json("https://api.openai.com/v1/chat/completions", payload)
+            text = data["choices"][0]["message"]["content"]
             print(f"openai response: {text}")
             return text
         except urllib.error.HTTPError as exc:
@@ -97,24 +88,62 @@ def validate_match(match: Match, people: list[Person]) -> None:
         raise ValueError(f"unknown person_id {match.person_id}")
 
 
-def shortlist(task: Task, people: list[Person], k: int = 3) -> list[Person]:
-    """Top-k people by skill-token overlap with the task. No LLM."""
-    desc = set((task.title + " " + task.description).lower().replace(",", " ").split())
-    scored = []
-    for person in people:
-        skills = set(" ".join(person.skills).lower().replace(",", " ").split())
-        scored.append((len(skills & desc), person))
-    scored.sort(key=lambda item: -item[0])
-    chosen = [person for _, person in scored[:k]]
-    print(
-        f"shortlist task={task.id} ids={[p.id for p in chosen]} "
-        f"scores={[score for score, _ in scored[:k]]}"
+def person_text(person: Person) -> str:
+    return " ".join([person.name, *person.skills])
+
+
+def task_text(task: Task) -> str:
+    return f"{task.title} {task.description}"
+
+
+def cosine(a, b) -> float:
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    return 0.0 if denom == 0 else float(a @ b / denom)
+
+
+def bag_of_words_embed(text: str, size: int = 32) -> np.ndarray:
+    vec = np.zeros(size)
+    for word in text.lower().replace(",", " ").split():
+        vec[sum(map(ord, word)) % size] += 1
+    return vec
+
+
+def openai_embed(text: str) -> list[float]:
+    print(f"openai embed start chars={len(text)}")
+    data = _openai_json(
+        "https://api.openai.com/v1/embeddings",
+        {
+            "model": os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+            "input": text,
+        },
     )
+    return data["data"][0]["embedding"]
+
+
+def shortlist(
+    task: Task,
+    people: list[Person],
+    k: int = 3,
+    embed_fn=None,
+) -> list[Person]:
+    """Top-k people by cosine(person embedding, task embedding)."""
+    embed = embed_fn or bag_of_words_embed
+    if not people:
+        print(f"shortlist task={task.id} ids=[]")
+        return []
+    task_vec = np.asarray(embed(task_text(task)), float)
+    matrix = np.asarray([embed(person_text(p)) for p in people], float)
+    denom = np.linalg.norm(matrix, axis=1) * np.linalg.norm(task_vec)
+    sims = np.divide(matrix @ task_vec, denom, out=np.zeros(len(people)), where=denom != 0)
+    order = np.argsort(-sims)[:k]
+    chosen = [people[i] for i in order]
+    print(f"shortlist task={task.id} ids={[p.id for p in chosen]} cosine={np.round(sims[order], 3).tolist()}")
     return chosen
 
 
-def match_person_to_task(task: Task, people: list[Person], llm_call, k: int = 3) -> Match:
-    candidates = shortlist(task, people, k)
+def match_person_to_task(task: Task, people: list[Person], llm_call, k: int = 3, embed_fn=None) -> Match:
+    candidates = shortlist(task, people, k, embed_fn=embed_fn)
     print(f"matching task={task.id}")
     raw = llm_call(build_prompt(task, candidates))
     print(f"llm raw: {raw}")
@@ -128,23 +157,13 @@ def match_person_to_task(task: Task, people: list[Person], llm_call, k: int = 3)
     return match
 
 
-def _result_for_task(task: Task, people: list[Person], llm_call, k: int) -> dict:
+def _result_for_task(task: Task, people: list[Person], llm_call, k: int, embed_fn) -> dict:
     try:
-        match = match_person_to_task(task, people, llm_call, k)
-        return {
-            "task_id": match.task_id,
-            "person_id": match.person_id,
-            "reason": match.reason,
-            "error": None,
-        }
+        match = match_person_to_task(task, people, llm_call, k, embed_fn=embed_fn)
+        return {"task_id": match.task_id, "person_id": match.person_id, "reason": match.reason, "error": None}
     except Exception as exc:
         print(f"failed task={task.id} error={exc}")
-        return {
-            "task_id": task.id,
-            "person_id": None,
-            "reason": None,
-            "error": str(exc),
-        }
+        return {"task_id": task.id, "person_id": None, "reason": None, "error": str(exc)}
 
 
 def match_all(
@@ -155,10 +174,12 @@ def match_all(
     workers: int = 2,
     batch_size: int = 2,
     done_ids: set[str] | None = None,
+    embed_fn=None,
 ) -> list[dict]:
-    """One LLM call per task. Shortlist, then batched threads. Skip done_ids (checkpoint)."""
-    done_ids = set(done_ids or [])
-    pending = [task for task in tasks if task.id not in done_ids]
+    """Score a batch in parallel. Assign 1:1 in task order. Skip done_ids."""
+    checkpoint = done_ids if done_ids is not None else set()
+    pending = [task for task in tasks if task.id not in checkpoint]
+    assigned: set[str] = set()
     print(
         f"match_all start pending={len(pending)} skipped={len(tasks) - len(pending)} "
         f"k={k} workers={workers} batch_size={batch_size}"
@@ -167,19 +188,21 @@ def match_all(
     for offset in range(0, len(pending), batch_size):
         batch = pending[offset : offset + batch_size]
         print(f"batch start offset={offset} tasks={[task.id for task in batch]}")
-        slots = [None] * len(batch)
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {
-                pool.submit(_result_for_task, task, people, llm_call, k): idx
-                for idx, task in enumerate(batch)
-            }
-            for fut in as_completed(futs):
-                idx = futs[fut]
-                slots[idx] = fut.result()
-                print(f"worker done task={batch[idx].id}")
-        for row in slots:
+            futs = [pool.submit(_result_for_task, task, people, llm_call, k, embed_fn) for task in batch]
+            slots = [fut.result() for fut in futs]
+        for task, row in zip(batch, slots):
+            if row["error"] is None and row["person_id"] in assigned:
+                remaining = [person for person in people if person.id not in assigned]
+                print(f"collision task={task.id} person={row['person_id']} remaining={[p.id for p in remaining]}")
+                if remaining:
+                    row = _result_for_task(task, remaining, llm_call, k, embed_fn)
+                else:
+                    row = {"task_id": task.id, "person_id": None, "reason": None, "error": "no free person"}
             results.append(row)
-            done_ids.add(row["task_id"])
-            print(f"commit task={row['task_id']}")
+            if row["error"] is None:
+                checkpoint.add(row["task_id"])
+                assigned.add(row["person_id"])
+            print(f"commit task={row['task_id']} person={row['person_id']}")
     print(f"match_all done total={len(results)}")
     return results
