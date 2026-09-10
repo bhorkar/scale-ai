@@ -96,3 +96,4 @@ def match_all(tasks, people, llm, workers=2):
         responses = list(pool.map(one, tasks))
     log.info("match summary tasks=%s responses=%s", len(tasks), len(responses))
     return responses
+
