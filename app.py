@@ -1,9 +1,8 @@
 import csv
-import json
 import logging
 
 from llm_client import LLMClient
-from matcher import match
+from matcher import match_all
 from parser import parse_people, parse_tasks
 
 log = logging.getLogger("app")
@@ -20,9 +19,11 @@ class MatchingApp:
     @staticmethod
     def write_matches(responses, path):
         rows = []
-        for text in responses:
+        for data in responses:
+            if not isinstance(data, dict) or data.get("error"):
+                log.error("match skipped row=%s", data)
+                continue
             try:
-                data = json.loads(text)
                 reason = data["reason"]
                 explanation = reason["explanation"] if isinstance(reason, dict) else str(reason)
                 rows.append(
@@ -33,8 +34,8 @@ class MatchingApp:
                     }
                 )
                 log.info("match row task_id=%s people_id=%s", data["task_id"], data["person_id"])
-            except (json.JSONDecodeError, KeyError, TypeError) as err:
-                log.error("match parse failed error=%s text=%s", err, text)
+            except (KeyError, TypeError) as err:
+                log.error("match parse failed error=%s data=%s", err, data)
         with open(path, "w", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=MATCH_FIELDS)
             writer.writeheader()
@@ -51,7 +52,7 @@ class MatchingApp:
             log.error("load failed error=%s", err)
             return [], [], []
         log.info("load done tasks=%s people=%s", len(tasks), len(people))
-        responses = match(tasks, people, llm=self.llm)
+        responses = match_all(tasks, people, llm=self.llm)
         log.info("match done responses=%s", len(responses))
         self.write_matches(responses, matches_path)
         return tasks, people, responses
