@@ -1,0 +1,5 @@
+id,name,skills,experiences
+p1,Alice,"python | pytorch | nlp","ML engineer at Stripe (4y) | NLP intern at Stanford"
+p2,Bob,"sql | analytics | python","Data analyst at Acme (3y)"
+p3,Carol,"spanish | writing | translation","Translator at Lingua (5y)"
+p4,Dan,"linux | cloud | sre","SRE at Nimbus (6y)"

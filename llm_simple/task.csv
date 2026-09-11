@@ -1,0 +1,5 @@
+id,title,required_skills,required_experiences,domain
+t1,Classify a support request,python | nlp,ML engineer | NLP research,language
+t2,Review a data pipeline,python | sql,data engineering,analytics
+t3,Assess a translation,spanish | writing,translation,language
+t4,Check an infrastructure change,linux | cloud,SRE,infra
