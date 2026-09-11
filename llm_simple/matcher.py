@@ -2,10 +2,12 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from parser import Person, Task
+
 log = logging.getLogger(__name__)
 
 
-def match_one(llm, task, people):
+def match_one(llm, task: Task, people: list[Person]) -> dict:
     log.info("match task %s", task.id)
     try:
         payload = llm.build_payload(llm.build_prompt(task, people))
@@ -15,7 +17,12 @@ def match_one(llm, task, people):
         return {"error": str(exc), "task_id": task.id}
 
 
-def match_all(tasks, people, llm, workers=None, on_success=None):
+def match_all(
+    tasks: list[Task],
+    people: list[Person],
+    llm,
+    workers: int | None = None,
+) -> list[dict]:
     workers = workers or getattr(llm, "workers", 1)
     started = time.perf_counter()
     results = [None] * len(tasks)
@@ -26,17 +33,5 @@ def match_all(tasks, people, llm, workers=None, on_success=None):
         }
         for future in as_completed(pending):
             index = pending[future]
-            row = future.result()
-            results[index] = row
-            if on_success and not row.get("error"):
-                log.info("write success task %s", row.get("task"))
-                on_success(row)
-    elapsed = time.perf_counter() - started
-    log.info(
-        "match_all tasks=%s workers=%s elapsed=%.3fs",
-        len(tasks),
-        workers,
-        elapsed,
-    )
+            results[index] = future.result()
     return results
-
