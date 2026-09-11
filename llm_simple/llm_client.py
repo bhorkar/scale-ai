@@ -4,19 +4,21 @@ import os
 
 import requests
 
+from parser import Person, Task
+
 log = logging.getLogger(__name__)
 
 
 class LLMClient:
     def __init__(
         self,
-        api_key=None,
-        url=None,
-        model="gpt-4o-mini",
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str = "gpt-4o-mini",
         post=requests.post,
-        timeout=30,
-        workers=1,
-        retries=3,
+        timeout: int = 30,
+        workers: int = 1,
+        retries: int = 3,
     ):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.url = url or "https://api.openai.com/v1/chat/completions"
@@ -26,7 +28,7 @@ class LLMClient:
         self.workers = workers
         self.retries = retries
 
-    def build_prompt(self, task, people):
+    def build_prompt(self, task: Task, people: list[Person]) -> str:
         return (
             "Match the task to the best person. "
             "Return a JSON object with keys task, people, and reason. "
@@ -36,7 +38,7 @@ class LLMClient:
             f"People: {people}"
         )
 
-    def build_payload(self, prompt):
+    def build_payload(self, prompt: str) -> dict:
         if not prompt.strip():
             raise ValueError("prompt is empty")
         return {
@@ -45,7 +47,7 @@ class LLMClient:
             "response_format": {"type": "json_object"},
         }
 
-    def validate_content(self, text, task, people):
+    def validate_content(self, text: str, task: Task, people: list[Person]) -> dict:
         try:
             data = json.loads(text)
         except (TypeError, json.JSONDecodeError):
@@ -62,7 +64,7 @@ class LLMClient:
             raise ValueError("people not in list")
         return data
 
-    def call(self, payload, task=None, people=None):
+    def call(self, payload: dict, task: Task | None = None, people: list[Person] | None = None) -> dict:
         if not payload:
             raise ValueError("payload is missing")
         if not self.api_key:
@@ -96,4 +98,3 @@ class LLMClient:
                 continue
             raise ValueError(last_error)
         raise ValueError(last_error)
-
